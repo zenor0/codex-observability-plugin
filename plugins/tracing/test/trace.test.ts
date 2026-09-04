@@ -4,16 +4,25 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { propagateAttributes } from "@langfuse/tracing";
+import { TraceFlags, type SpanContext } from "@opentelemetry/api";
 import {
+  AlwaysOnSampler,
   InMemorySpanExporter,
+  ParentBasedSampler,
   type ReadableSpan,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Config } from "../src/config.js";
 import { convertRollout } from "../src/trace.js";
+
+vi.mock("@langfuse/tracing", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@langfuse/tracing")>();
+  return { ...actual, propagateAttributes: vi.fn(actual.propagateAttributes) };
+});
 
 const exporter = new InMemorySpanExporter();
 let provider: NodeTracerProvider;
@@ -29,6 +38,13 @@ const baseConfig: Config = {
 };
 
 const fixturesRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures/sessions");
+
+const externalParent: SpanContext = {
+  traceId: "0af7651916cd43dd8448eb211c80319c",
+  spanId: "b7ad6b7169203331",
+  traceFlags: TraceFlags.SAMPLED,
+  isRemote: true,
+};
 
 /** Copy the fixture session tree to a fresh temp dir (isolates sidecar writes). */
 function stageFixtures(): string {
@@ -55,6 +71,7 @@ const parentId = (span: ReadableSpan): string | undefined =>
 beforeAll(() => {
   provider = new NodeTracerProvider({
     spanProcessors: [new SimpleSpanProcessor(exporter)],
+    sampler: new ParentBasedSampler({ root: new AlwaysOnSampler() }),
   });
   provider.register();
 });
@@ -65,6 +82,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   exporter.reset();
+  vi.mocked(propagateAttributes).mockClear();
 });
 
 describe("convertRollout", () => {
@@ -214,6 +232,103 @@ describe("convertRollout", () => {
     exporter.reset();
     await convertRollout(file, { config: baseConfig });
     expect(exporter.getFinishedSpans()).toHaveLength(0);
+  });
+});
+
+describe("external parent context", () => {
+  it("attaches the complete Codex tree beneath the external span and overrides trace_seed", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-basic-main.jsonl"), {
+      config: { ...baseConfig, trace_seed: "unused-seed" },
+      parentSpanContext: externalParent,
+    });
+
+    const spans = exporter.getFinishedSpans();
+    const root = spans.find((span) => span.name === "Codex Turn")!;
+    expect(parentId(root)).toBe(externalParent.spanId);
+    expect(root.spanContext().traceId).toBe(externalParent.traceId);
+
+    expect(spans.filter((span) => obsType(span) === "generation")).toHaveLength(2);
+    expect(spans.filter((span) => obsType(span) === "tool")).toHaveLength(1);
+    for (const span of spans) {
+      expect(span.spanContext().traceId).toBe(externalParent.traceId);
+    }
+  });
+
+  it("keeps subagent turns nested under the spawning Codex turn", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-parent.jsonl"), {
+      config: baseConfig,
+      parentSpanContext: externalParent,
+    });
+
+    const spans = exporter.getFinishedSpans();
+    const parent = spans.find((span) => span.name === "Codex Turn")!;
+    const child = spans.find((span) => span.name === "Codex Subagent Turn")!;
+    expect(parentId(parent)).toBe(externalParent.spanId);
+    expect(parentId(child)).toBe(parent.spanContext().spanId);
+    expect(child.spanContext().traceId).toBe(externalParent.traceId);
+  });
+
+  it("attaches every top-level turn in the process as a sibling", async () => {
+    const dir = stageFixtures();
+    await convertRollout(path.join(dir, "rollout-two-turns-main.jsonl"), {
+      config: baseConfig,
+      parentSpanContext: externalParent,
+    });
+
+    const roots = exporter.getFinishedSpans().filter((span) => span.name === "Codex Turn");
+    expect(roots).toHaveLength(2);
+    for (const root of roots) {
+      expect(parentId(root)).toBe(externalParent.spanId);
+      expect(root.spanContext().traceId).toBe(externalParent.traceId);
+    }
+  });
+
+  it("leaves trace-level attributes to the external application", async () => {
+    const config: Config = {
+      ...baseConfig,
+      user_id: "codex-user",
+      tags: ["codex-tag"],
+      metadata: { owner: "codex" },
+    };
+
+    const standaloneDir = stageFixtures();
+    await convertRollout(path.join(standaloneDir, "rollout-basic-main.jsonl"), { config });
+    expect(vi.mocked(propagateAttributes)).toHaveBeenCalledWith(
+      {
+        sessionId: "sess-basic",
+        traceName: "Codex Turn",
+        userId: "codex-user",
+        tags: ["codex-tag"],
+        metadata: { owner: "codex" },
+      },
+      expect.any(Function),
+    );
+
+    exporter.reset();
+    vi.mocked(propagateAttributes).mockClear();
+    const attachedDir = stageFixtures();
+    await convertRollout(path.join(attachedDir, "rollout-basic-main.jsonl"), {
+      config,
+      parentSpanContext: externalParent,
+    });
+    const attachedRoot = exporter.getFinishedSpans().find((span) => span.name === "Codex Turn")!;
+    expect(propagateAttributes).not.toHaveBeenCalled();
+    expect(attr(attachedRoot, "langfuse.observation.metadata.codex.turn_id")).toBe("turn-1");
+  });
+
+  it("exports no spans for an unsampled parent but still records completed turns", async () => {
+    const dir = stageFixtures();
+    const file = path.join(dir, "rollout-basic-main.jsonl");
+
+    await convertRollout(file, {
+      config: baseConfig,
+      parentSpanContext: { ...externalParent, traceFlags: TraceFlags.NONE },
+    });
+
+    expect(exporter.getFinishedSpans()).toHaveLength(0);
+    expect(fs.readFileSync(`${file}.langfuse`, "utf-8")).toBe("turn-1\n");
   });
 });
 

@@ -46087,12 +46087,94 @@ function setupInstrumentation(config$1) {
 		exportMode: "batched",
 		shouldExportSpan: () => true
 	});
-	const provider = new import_src.NodeTracerProvider({ spanProcessors: [spanProcessor] });
+	const provider = new import_src.NodeTracerProvider({
+		spanProcessors: [spanProcessor],
+		sampler: new import_src$3.ParentBasedSampler({ root: new import_src$3.AlwaysOnSampler() })
+	});
 	provider.register();
 	return { shutdown: async () => {
 		await spanProcessor.forceFlush();
 		await provider.shutdown();
 	} };
+}
+
+//#endregion
+//#region src/utils.ts
+/** Read and JSON-parse the hook payload Codex writes to stdin. */
+function readStdin() {
+	return new Promise((resolve, reject) => {
+		let buffer = "";
+		process.stdin.setEncoding("utf-8");
+		process.stdin.on("data", (chunk) => buffer += chunk);
+		process.stdin.on("end", () => {
+			const trimmed = buffer.trim();
+			if (!trimmed) {
+				reject(/* @__PURE__ */ new Error("empty hook stdin"));
+				return;
+			}
+			try {
+				resolve(JSON.parse(trimmed));
+			} catch (error) {
+				reject(/* @__PURE__ */ new Error(`failed to parse hook stdin: ${error instanceof Error ? error.message : String(error)}`));
+			}
+		});
+		process.stdin.once("error", reject);
+	});
+}
+function isPrimitive(value) {
+	const t = typeof value;
+	return t === "string" || t === "number" || t === "boolean";
+}
+/** Stringify a value for display, leaving strings untouched. */
+function toText(value) {
+	if (value == null) return "";
+	if (typeof value === "string") return value;
+	if (isPrimitive(value)) return String(value);
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return String(value);
+	}
+}
+/**
+* Truncate large text to keep traces lightweight. Returns the (possibly
+* shortened) value plus metadata describing what was dropped, or `undefined`
+* metadata when nothing was truncated.
+*/
+function truncate(value, maxChars) {
+	if (value.length <= maxChars) return { text: value };
+	return {
+		text: value.slice(0, maxChars),
+		meta: {
+			truncated: true,
+			originalLength: value.length
+		}
+	};
+}
+let debugEnabled = false;
+function setDebug(enabled) {
+	debugEnabled = enabled;
+}
+function debugLog(...args) {
+	if (!debugEnabled) return;
+	console.error("[langfuse-codex]", ...args);
+}
+
+//#endregion
+//#region src/parent-context.ts
+const EXTERNAL_TRACEPARENT_ENV_VAR = "LANGFUSE_CODEX_TRACEPARENT";
+/** Read the transient W3C parent context supplied by the process owner. */
+function readExternalParentSpanContext(env, failOnError$1) {
+	const value = env[EXTERNAL_TRACEPARENT_ENV_VAR];
+	if (value === void 0) return void 0;
+	const parsed = (0, import_src$1.parseTraceParent)(value);
+	if (parsed) return {
+		...parsed,
+		isRemote: true
+	};
+	const error = /* @__PURE__ */ new Error(`${EXTERNAL_TRACEPARENT_ENV_VAR} must be a valid W3C traceparent value`);
+	debugLog(`invalid ${EXTERNAL_TRACEPARENT_ENV_VAR}; falling back to trace_seed or an auto-generated trace`);
+	if (failOnError$1) throw error;
 }
 
 //#endregion
@@ -46555,68 +46637,6 @@ function uint8ArrayToHex(array$1) {
 }
 
 //#endregion
-//#region src/utils.ts
-/** Read and JSON-parse the hook payload Codex writes to stdin. */
-function readStdin() {
-	return new Promise((resolve, reject) => {
-		let buffer = "";
-		process.stdin.setEncoding("utf-8");
-		process.stdin.on("data", (chunk) => buffer += chunk);
-		process.stdin.on("end", () => {
-			const trimmed = buffer.trim();
-			if (!trimmed) {
-				reject(/* @__PURE__ */ new Error("empty hook stdin"));
-				return;
-			}
-			try {
-				resolve(JSON.parse(trimmed));
-			} catch (error) {
-				reject(/* @__PURE__ */ new Error(`failed to parse hook stdin: ${error instanceof Error ? error.message : String(error)}`));
-			}
-		});
-		process.stdin.once("error", reject);
-	});
-}
-function isPrimitive(value) {
-	const t = typeof value;
-	return t === "string" || t === "number" || t === "boolean";
-}
-/** Stringify a value for display, leaving strings untouched. */
-function toText(value) {
-	if (value == null) return "";
-	if (typeof value === "string") return value;
-	if (isPrimitive(value)) return String(value);
-	try {
-		return JSON.stringify(value);
-	} catch {
-		return String(value);
-	}
-}
-/**
-* Truncate large text to keep traces lightweight. Returns the (possibly
-* shortened) value plus metadata describing what was dropped, or `undefined`
-* metadata when nothing was truncated.
-*/
-function truncate(value, maxChars) {
-	if (value.length <= maxChars) return { text: value };
-	return {
-		text: value.slice(0, maxChars),
-		meta: {
-			truncated: true,
-			originalLength: value.length
-		}
-	};
-}
-let debugEnabled = false;
-function setDebug(enabled) {
-	debugEnabled = enabled;
-}
-function debugLog(...args) {
-	if (!debugEnabled) return;
-	console.error("[langfuse-codex]", ...args);
-}
-
-//#endregion
 //#region src/parse.ts
 /** Extract printable text from a Codex message `content` array. */
 function extractMessageText(content) {
@@ -47063,7 +47083,7 @@ async function emitTurn(turn, sessionMeta, ctx) {
 	}, {
 		asType: "agent",
 		startTime: new Date(turn.startTime),
-		parentSpanContext: ctx.parentObservation?.otelSpan.spanContext() ?? ctx.seededParent
+		parentSpanContext: ctx.parentObservation?.otelSpan.spanContext() ?? ctx.parentSpanContext
 	});
 	let previousToolResults = void 0;
 	for (let i = 0; i < turn.steps.length; i++) {
@@ -47138,20 +47158,20 @@ async function convertRollout(rolloutFile, options) {
 	for (let turnIndex = 0; turnIndex < turns.length; turnIndex++) {
 		const turn = turns[turnIndex];
 		if (turn.completed && turn.turnId && uploaded.has(turn.turnId)) continue;
-		const seededParent = await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
-		await propagateAttributes({
+		const parentSpanContext = options.parentSpanContext ?? await seededTraceParent(options.config, sessionMeta, turnIndex + 1);
+		const emit = () => emitTurn(turn, sessionMeta, {
+			config: options.config,
+			rolloutFile,
+			parentSpanContext
+		});
+		if (options.parentSpanContext) await emit();
+		else await propagateAttributes({
 			sessionId: sessionMeta.sessionId,
 			traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
 			...options.config.user_id ? { userId: options.config.user_id } : {},
 			...options.config.tags ? { tags: options.config.tags } : {},
 			...options.config.metadata ? { metadata: options.config.metadata } : {}
-		}, async () => {
-			await emitTurn(turn, sessionMeta, {
-				config: options.config,
-				rolloutFile,
-				seededParent
-			});
-		});
+		}, emit);
 		if (turn.completed && turn.turnId) {
 			uploaded.add(turn.turnId);
 			await markTurnUploaded(rolloutFile, turn.turnId);
@@ -47196,9 +47216,13 @@ async function runHook() {
 		debugLog("hook payload missing transcript_path; skipping");
 		return;
 	}
+	const parentSpanContext = readExternalParentSpanContext(process.env, config$1.fail_on_error);
 	const instrumentation = setupInstrumentation(config$1);
 	try {
-		await convertRollout(hookInput.transcript_path, { config: config$1 });
+		await convertRollout(hookInput.transcript_path, {
+			config: config$1,
+			parentSpanContext
+		});
 	} catch (error) {
 		debugLog("failed to convert rollout:", error);
 		if (config$1.fail_on_error) throw error;

@@ -1,4 +1,5 @@
 import { LangfuseSpanProcessor } from "@langfuse/otel";
+import { AlwaysOnSampler, ParentBasedSampler } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 
 import type { Config } from "./config.js";
@@ -28,12 +29,15 @@ export function setupInstrumentation(config: Config): Instrumentation {
     baseUrl: config.base_url,
     environment: config.environment,
     exportMode: "batched",
-    // The hook only ever creates Langfuse spans, so export all of them.
+    // The hook only creates Langfuse spans, so export every recorded span.
+    // Parent-based sampling below decides whether a span is recorded at all.
     shouldExportSpan: () => true,
   });
 
   const provider = new NodeTracerProvider({
     spanProcessors: [spanProcessor],
+    // Export standalone traces while honoring an attached parent's sampled bit.
+    sampler: new ParentBasedSampler({ root: new AlwaysOnSampler() }),
   });
   provider.register();
 
