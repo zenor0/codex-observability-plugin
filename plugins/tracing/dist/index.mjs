@@ -46078,7 +46078,7 @@ var import_src = require_src();
 * is far faster than one request per span — important for the hook's timeout
 * budget. `shutdown()` below calls `forceFlush()` before the process exits.
 */
-function setupInstrumentation(config$1) {
+function setupInstrumentation(config$1, options = {}) {
 	const spanProcessor = new LangfuseSpanProcessor({
 		publicKey: config$1.public_key,
 		secretKey: config$1.secret_key,
@@ -46089,7 +46089,7 @@ function setupInstrumentation(config$1) {
 	});
 	const provider = new import_src.NodeTracerProvider({
 		spanProcessors: [spanProcessor],
-		sampler: new import_src$3.ParentBasedSampler({ root: new import_src$3.AlwaysOnSampler() })
+		...options.attached ? { sampler: new import_src$3.ParentBasedSampler({ root: new import_src$3.AlwaysOnSampler() }) } : {}
 	});
 	provider.register();
 	return { shutdown: async () => {
@@ -47217,7 +47217,7 @@ async function runHook() {
 		return;
 	}
 	const parentSpanContext = readExternalParentSpanContext(process.env, config$1.fail_on_error);
-	const instrumentation = setupInstrumentation(config$1);
+	const instrumentation = setupInstrumentation(config$1, { attached: parentSpanContext != null });
 	try {
 		await convertRollout(hookInput.transcript_path, {
 			config: config$1,

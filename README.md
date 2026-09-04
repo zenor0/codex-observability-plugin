@@ -142,7 +142,7 @@ Use this mode only when one Master Agent Run owns one Codex/App Server process. 
 
 The Master application and this plugin must export to the same Langfuse project for the observations to appear in one trace. In attached mode, the Master application owns trace-level name, session, user, tags, and metadata; the plugin still records all Codex observation metadata, inputs, outputs, reasoning, usage, and errors.
 
-The final trace flags are honored. A parent ending in `-01` exports the Codex observations; a parent ending in `-00` exports none of them, while completed turns are still written to the dedup sidecar as processed. Invalid values fall back to `LANGFUSE_CODEX_TRACE_SEED` or an auto-generated trace; set `LANGFUSE_CODEX_FAIL_ON_ERROR=true` to reject them instead.
+The final trace flags are honored. A parent ending in `-01` exports the Codex observations; a parent ending in `-00` exports none of them, while completed turns are still written to the dedup sidecar as processed. Attached mode treats this upstream decision as authoritative even when `OTEL_TRACES_SAMPLER` is set. Standalone mode continues to honor the standard OpenTelemetry sampler environment variables. Invalid values fall back to `LANGFUSE_CODEX_TRACE_SEED` or an auto-generated trace; set `LANGFUSE_CODEX_FAIL_ON_ERROR=true` to reject them instead.
 
 ## Deterministic trace ids
 
@@ -231,9 +231,12 @@ The hook fails open: any tracing error is logged and swallowed so it never block
 ```bash
 pnpm install
 pnpm test        # run the test suite
+pnpm run test:e2e # test a real Master span + bundled hook against Langfuse
 pnpm run lint    # prettier + tsc + verify the committed bundle is current
 pnpm run build   # bundle the hook to plugins/tracing/dist/index.mjs
 ```
+
+The opt-in E2E test requires `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (plus `LANGFUSE_BASE_URL` for a non-EU or self-hosted instance). It creates one uniquely identified trace, validates the persisted parent-child tree through the public observations API, and deletes that trace before exiting. The regular test suite never sends data to Langfuse.
 
 The hook ships as a single self-contained `plugins/tracing/dist/index.mjs` (no install step runs when Codex loads the plugin), so the bundle is committed to the repo. After changing anything under `src/`, run `pnpm run build` and commit the updated bundle — CI enforces this via `pnpm run lint`.
 

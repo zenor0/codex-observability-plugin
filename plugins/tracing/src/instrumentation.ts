@@ -9,6 +9,11 @@ export type Instrumentation = {
   shutdown: () => Promise<void>;
 };
 
+type InstrumentationOptions = {
+  /** Whether spans are children of a process-level parent supplied by the launcher. */
+  attached?: boolean;
+};
+
 /**
  * Configure an isolated OpenTelemetry tracer provider wired to Langfuse.
  *
@@ -22,7 +27,10 @@ export type Instrumentation = {
  * is far faster than one request per span — important for the hook's timeout
  * budget. `shutdown()` below calls `forceFlush()` before the process exits.
  */
-export function setupInstrumentation(config: Config): Instrumentation {
+export function setupInstrumentation(
+  config: Config,
+  options: InstrumentationOptions = {},
+): Instrumentation {
   const spanProcessor = new LangfuseSpanProcessor({
     publicKey: config.public_key,
     secretKey: config.secret_key,
@@ -36,8 +44,12 @@ export function setupInstrumentation(config: Config): Instrumentation {
 
   const provider = new NodeTracerProvider({
     spanProcessors: [spanProcessor],
-    // Export standalone traces while honoring an attached parent's sampled bit.
-    sampler: new ParentBasedSampler({ root: new AlwaysOnSampler() }),
+    // Attached mode treats the launcher's sampled bit as authoritative.
+    // Standalone mode leaves this unset so standard OTEL_TRACES_SAMPLER
+    // configuration keeps working exactly as it did before attached mode.
+    ...(options.attached
+      ? { sampler: new ParentBasedSampler({ root: new AlwaysOnSampler() }) }
+      : {}),
   });
   provider.register();
 

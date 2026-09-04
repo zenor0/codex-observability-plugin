@@ -1,4 +1,4 @@
-import { TraceFlags, type SpanContext } from "@opentelemetry/api";
+import { context, trace, TraceFlags, type SpanContext } from "@opentelemetry/api";
 import type { ReadableSpan } from "@opentelemetry/sdk-trace-base";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -38,12 +38,14 @@ const parent = (traceFlags: TraceFlags): SpanContext => ({
 afterEach(() => {
   vi.unstubAllEnvs();
   finishedSpans.length = 0;
+  context.disable();
+  trace.disable();
 });
 
 describe("setupInstrumentation", () => {
-  it("honors an unsampled remote parent even when the ambient sampler is always_on", async () => {
-    vi.stubEnv("OTEL_TRACES_SAMPLER", "always_on");
-    const instrumentation = setupInstrumentation(config);
+  it("makes the attached parent's sampled flag authoritative", async () => {
+    vi.stubEnv("OTEL_TRACES_SAMPLER", "always_off");
+    const instrumentation = setupInstrumentation(config, { attached: true });
     const { startObservation } = await import("@langfuse/tracing");
 
     const sampled = startObservation(
@@ -67,6 +69,18 @@ describe("setupInstrumentation", () => {
     unsampled.end();
 
     expect(finishedSpans.map((span) => span.name)).toEqual(["sampled"]);
+    await instrumentation.shutdown();
+  });
+
+  it("preserves OTEL_TRACES_SAMPLER behavior in standalone mode", async () => {
+    vi.stubEnv("OTEL_TRACES_SAMPLER", "always_off");
+    const instrumentation = setupInstrumentation(config);
+    const { startObservation } = await import("@langfuse/tracing");
+
+    const standalone = startObservation("standalone", {}, { asType: "agent" });
+    standalone.end();
+
+    expect(finishedSpans).toHaveLength(0);
     await instrumentation.shutdown();
   });
 });

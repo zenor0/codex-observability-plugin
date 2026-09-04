@@ -46,7 +46,9 @@ export async function runHook(): Promise<void> {
   }
 
   const parentSpanContext = readExternalParentSpanContext(process.env, config.fail_on_error);
-  const instrumentation = setupInstrumentation(config);
+  const instrumentation = setupInstrumentation(config, {
+    attached: parentSpanContext != null,
+  });
   try {
     await convertRollout(hookInput.transcript_path, { config, parentSpanContext });
   } catch (error) {
