@@ -34,6 +34,7 @@
     "lint": "pnpm run format:check && pnpm run lint:tsc && pnpm run lint:dist"
   },
   "dependencies": {
+    "@langfuse/core": "^5.4.1",
     "@langfuse/otel": "^5.4.1",
     "@langfuse/tracing": "^5.4.1",
     "@opentelemetry/api": "^1.9.0",

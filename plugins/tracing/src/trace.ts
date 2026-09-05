@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
+import { setLangfuseTraceIdInBaggage } from "@langfuse/core";
 import {
   createTraceId,
   propagateAttributes,
@@ -9,7 +10,7 @@ import {
   type LangfuseGenerationAttributes,
   type LangfuseObservation,
 } from "@langfuse/tracing";
-import { TraceFlags, type SpanContext } from "@opentelemetry/api";
+import { context, TraceFlags, type SpanContext } from "@opentelemetry/api";
 
 import type { Config } from "./config.js";
 import { parseSession } from "./parse.js";
@@ -374,7 +375,12 @@ export async function convertRollout(
     if (options.parentSpanContext) {
       // The external application owns trace-level name, session, user, tags,
       // and metadata. Codex observation metadata is still emitted by emitTurn.
-      await emit();
+      // Carry its Langfuse claim so the SDK does not mark Codex as another app root.
+      const parentContext = setLangfuseTraceIdInBaggage(
+        context.active(),
+        options.parentSpanContext.traceId,
+      );
+      await context.with(parentContext, emit);
     } else {
       await propagateAttributes(
         {

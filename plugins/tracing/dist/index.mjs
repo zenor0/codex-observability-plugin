@@ -15264,6 +15264,13 @@ function getLangfuseTraceIdFromBaggage(context$1) {
 	if (!(entry == null ? void 0 : entry.value)) return void 0;
 	return entry.value.toLowerCase();
 }
+function setLangfuseTraceIdInBaggage(context$1, traceId) {
+	var _a2;
+	const normalized = traceId.toLowerCase();
+	if (getLangfuseTraceIdFromBaggage(context$1) === normalized) return context$1;
+	const updated = ((_a2 = propagation.getBaggage(context$1)) != null ? _a2 : propagation.createBaggage()).setEntry(LANGFUSE_TRACE_ID_BAGGAGE_KEY, { value: normalized });
+	return propagation.setBaggage(context$1, updated);
+}
 function propagateAttributes(params, fn) {
 	var _a2;
 	let context$1 = context.active();
@@ -47164,8 +47171,10 @@ async function convertRollout(rolloutFile, options) {
 			rolloutFile,
 			parentSpanContext
 		});
-		if (options.parentSpanContext) await emit();
-		else await propagateAttributes({
+		if (options.parentSpanContext) {
+			const parentContext = setLangfuseTraceIdInBaggage(context.active(), options.parentSpanContext.traceId);
+			await context.with(parentContext, emit);
+		} else await propagateAttributes({
 			sessionId: sessionMeta.sessionId,
 			traceName: sessionMeta.isSubagentThread ? "Codex Subagent Turn" : "Codex Turn",
 			...options.config.user_id ? { userId: options.config.user_id } : {},
