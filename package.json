@@ -24,14 +24,13 @@
   "type": "module",
   "scripts": {
     "build": "tsdown --config plugins/tracing/tsdown.config.ts",
-    "test": "vitest run",
+    "test": "pnpm run build && vitest run",
     "test:e2e": "pnpm run build && vitest run --config vitest.e2e.config.ts",
-    "test:watch": "vitest",
+    "test:watch": "pnpm run build && vitest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint:tsc": "tsc --noEmit",
-    "lint:dist": "pnpm run build && git diff --exit-code -- plugins/tracing/dist/index.mjs",
-    "lint": "pnpm run format:check && pnpm run lint:tsc && pnpm run lint:dist"
+    "lint": "pnpm run format:check && pnpm run lint:tsc && pnpm run build"
   },
   "dependencies": {
     "@langfuse/core": "^5.4.1",
