@@ -243,9 +243,12 @@ The hook fails open: any tracing error is logged and swallowed so it never block
 ```bash
 pnpm install
 pnpm test        # build, then run the test suite
+pnpm run test:e2e # test a real Master span + bundled hook against Langfuse
 pnpm run lint    # prettier + tsc + build
 pnpm run build   # bundle the hook to plugins/tracing/dist/index.mjs
 ```
+
+The opt-in E2E test requires `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` (plus `LANGFUSE_BASE_URL` for a non-EU or self-hosted instance). It creates one uniquely identified trace, validates the persisted parent-child tree through the public observations API, and deletes that trace before exiting. The regular test suite never sends data to Langfuse.
 
 The hook ships as a single self-contained `plugins/tracing/dist/index.mjs`, because Codex runs the plugin without an install step and never installs its dependencies. The bundle is a build output and is not committed: `prepack` builds it when the npm package is published, so it travels in the tarball instead of in Git. `pnpm test` builds first, since the hook-command test executes the bundled hook.
 
